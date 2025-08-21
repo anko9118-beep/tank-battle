@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Tank City 風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    canvas {
+      background: #111;
+      border: 2px solid #555;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+    let keys     = {};
+
+    // 壁設定
+    const WALL_SIZE  = 50;
+    const WALL_COUNT = 20;
+    let walls = [];
+
+    class Tank {
+      constructor(x, y, color) {
+        this.x = x; this.y = y;
+        this.size  = 30;
+        this.color = color;
+        this.dirX  = 0; this.dirY = -1;
+        this.speed = 150;
+        this.hp    = 2;
+      }
+      update(dt) {
+        if (this === player) {
+          if (keys['ArrowUp'])    { this.y -= this.speed * dt; this.dirX = 0;  this.dirY = -1; }
+          if (keys['ArrowDown'])  { this.y += this.speed * dt; this.dirX = 0;  this.dirY = 1;  }
+          if (keys['ArrowLeft'])  { this.x -= this.speed * dt; this.dirX = -1; this.dirY = 0;  }
+          if (keys['ArrowRight']) { this.x += this.speed * dt; this.dirX = 1;  this.dirY = 0;  }
+          this.x = Math.max(this.size/2, Math.min(canvas.width  - this.size/2, this.x));
+          this.y = Math.max(this.size/2, Math.min(canvas.height - this.size/2, this.y));
+        }
+      }
+      render() {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth   = 4;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(this.x + this.dirX * this.size, this.y + this.dirY * this.size);
+        ctx.stroke();
+      }
+    }
+
+    class Bullet {
+      constructor(x, y, vx, vy, owner) {
+        this.x = x; this.y = y;
+        this.vx = vx; this.vy = vy;
+        this.r  = 5;
+        this.owner = owner; // 'player','enemy','boss'
+      }
+      update(dt) {
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+      }
+      render() {
+        if (this.owner === 'player')      ctx.fillStyle = '#ff0';
+        else if (this.owner === 'enemy')  ctx.fillStyle = '#f00';
+        else                              ctx.fillStyle = '#0ff';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    class Enemy extends Tank {
+      constructor(x, y) {
+        super(x, y, '#f00');
+        this.speed = 80;
+        this.shootCooldown = Math.random() * 2 + 1;
+      }
+      update(dt) {
+        // 移動前座標保持
+        const prevX = this.x, prevY = this.y;
+
+        // プレイヤー追尾移動
+        const dx = player.x - this.x;
+        const dy = player.y - this.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        this.dirX = dx / dist;
+        this.dirY = dy / dist;
+        this.x += this.dirX * this.speed * dt;
+        this.y += this.dirY * this.speed * dt;
+
+        // 壁衝突判定 → 回避
+        for (const w of walls) {
+          if (this.x + this.size/2 > w.x &&
+              this.x - this.size/2 < w.x + w.w &&
+              this.y + this.size/2 > w.y &&
+              this.y - this.size/2 < w.y + w.h) {
+            // 衝突したら元に戻して90度回避
+            this.x = prevX; this.y = prevY;
+            const angle = (Math.random() < 0.5 ? 1 : -1) * Math.PI/2;
+            const nx = this.dirX * Math.cos(angle) - this.dirY * Math.sin(angle);
+            const ny = this.dirX * Math.sin(angle) + this.dirY * Math.cos(angle);
+            this.dirX = nx; this.dirY = ny;
+            this.x += this.dirX * this.speed * dt;
+            this.y += this.dirY * this.speed * dt;
+            break;
+          }
+        }
+
+        // 射撃処理
+        this.shootCooldown -= dt;
+        if (this.shootCooldown <= 0) {
+          const bSpeed = 200;
+          bullets.push(new Bullet(
+            this.x + this.dirX * this.size,
+            this.y + this.dirY * this.size,
+            this.dirX * bSpeed,
+            this.dirY * bSpeed,
+            'enemy'
+          ));
+          this.shootCooldown = Math.random() * 2 + 1;
+        }
+      }
+    }
+
+    class Boss extends Tank {
+      constructor(x, y) {
+        super(x, y, '#a0f');
+        this.size          = 60;
+        this.hp            = 20;
+        this.speed         = 50;
+        this.entered       = false;
+        this.shootCooldown = 1.5;
+      }
+      update(dt) {
+        // 1) 降下フェーズ
+        if (!this.entered) {
+          this.y += this.speed * dt;
+          if (this.y >= this.size) this.entered = true;
+        }
+        // 2) 画面内移動＆射撃
+        else {
+          this.x += Math.sin(Date.now()/1000) * this.speed * dt;
+          this.shootCooldown -= dt;
+          if (this.shootCooldown <= 0) {
+            const dx = player.x - this.x;
+            const dy = player.y - this.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            const dirX = dx / dist;
+            const dirY = dy / dist;
+            const bSpeed = 250;
+            bullets.push(new Bullet(
+              this.x + dirX * this.size,
+              this.y + dirY * this.size,
+              dirX * bSpeed,
+              dirY * bSpeed,
+              'boss'
+            ));
+            this.shootCooldown = 1.5;
+          }
+        }
+
+        // 壁破壊判定
+        walls = walls.filter(w =>
+          !( this.x + this.size/2 > w.x &&
+             this.x - this.size/2 < w.x + w.w &&
+             this.y + this.size/2 > w.y &&
+             this.y - this.size/2 < w.y + w.h )
+        );
+      }
+    }
+
+    const player     = new Tank(canvas.width/2, canvas.height/2, '#0f0');
+    let bullets      = [];
+    let enemies      = [];
+    let boss         = null;
+    let score        = 0;
+    let lastSpawn    = 0;
+    let shootCooldown= 0;
+
+    function generateWalls() {
+      walls = [];
+      const safeRadius = 100;
+      let attempts = 0;
+      while (walls.length < WALL_COUNT && attempts < WALL_COUNT*10) {
+        const x = Math.random() * (canvas.width - WALL_SIZE);
+        const y = Math.random() * (canvas.height - WALL_SIZE);
+        const dx = x + WALL_SIZE/2 - player.x;
+        const dy = y + WALL_SIZE/2 - player.y;
+        if (Math.hypot(dx, dy) > safeRadius) {
+          walls.push({ x, y, w: WALL_SIZE, h: WALL_SIZE });
+        }
+        attempts++;
+      }
+    }
+
+    function restartGame() {
+      enemies = [];
+      bullets = [];
+      boss    = null;
+      score   = 0;
+      lastSpawn = 0;
+      shootCooldown = 0;
+      player.x = canvas.width/2;
+      player.y = canvas.height/2;
+      player.dirX = 0; player.dirY = -1;
+      generateWalls();
+    }
+
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup',   e => keys[e.key] = false);
+
+    function loop(ts) {
+      if (!loop.last) loop.last = ts;
+      const dt = (ts - loop.last) / 1000;
+      loop.last = ts;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function update(dt) {
+      // プレイヤー移動＋壁衝突
+      const pPrevX = player.x, pPrevY = player.y;
+      player.update(dt);
+      for (const w of walls) {
+        if (player.x + player.size/2 > w.x &&
+            player.x - player.size/2 < w.x + w.w &&
+            player.y + player.size/2 > w.y &&
+            player.y - player.size/2 < w.y + w.h) {
+          player.x = pPrevX; player.y = pPrevY;
+          break;
+        }
+      }
+
+      // プレイヤー射撃
+      shootCooldown -= dt;
+      if (keys[' '] && shootCooldown <= 0) {
+        const speed = 300;
+        bullets.push(new Bullet(
+          player.x + player.dirX * player.size,
+          player.y + player.dirY * player.size,
+          player.dirX * speed,
+          player.dirY * speed,
+          'player'
+        ));
+        shootCooldown = 0.5;
+      }
+
+      // 弾丸更新＋画面外／壁で消滅
+      bullets.forEach(b => b.update(dt));
+      bullets = bullets.filter(b => {
+        const inBounds = b.x >= 0 && b.x <= canvas.width && b.y >= 0 && b.y <= canvas.height;
+        const hitWall  = walls.some(w =>
+          b.x > w.x && b.x < w.x + w.w && b.y > w.y && b.y < w.y + w.h
+        );
+        return inBounds && !hitWall;
+      });
+
+      // 敵スポーン
+      if (score < 10) {
+        lastSpawn += dt;
+        if (lastSpawn > 2) {
+          lastSpawn = 0;
+          const side = Math.floor(Math.random()*4);
+          let ex, ey;
+          if (side === 0) { ex = 0; ey = Math.random()*canvas.height; }
+          if (side === 1) { ex = canvas.width; ey = Math.random()*canvas.height; }
+          if (side === 2) { ex = Math.random()*canvas.width; ey = 0; }
+          if (side === 3) { ex = Math.random()*canvas.width; ey = canvas.height; }
+          enemies.push(new Enemy(ex, ey));
+        }
+      }
+
+      // ボス出現
+      if (score >= 10 && !boss) {
+        boss = new Boss(canvas.width/2, -60);
+      }
+
+      // 敵＆ボス更新
+      enemies.forEach(e => e.update(dt));
+      if (boss) boss.update(dt);
+
+      // プレイヤー弾 vs 敵／ボス
+      bullets.forEach((b, bi) => {
+        if (b.owner === 'player') {
+          enemies.forEach((e, ei) => {
+            if (Math.hypot(b.x-e.x, b.y-e.y) < b.r + e.size/2) {
+              bullets.splice(bi,1);
+              e.hp--;
+              if (e.hp <= 0) { enemies.splice(ei,1); score++; }
+            }
+          });
+          if (boss && Math.hypot(b.x-boss.x, b.y-boss.y) < b.r + boss.size/2) {
+            bullets.splice(bi,1);
+            boss.hp--;
+            if (boss.hp <= 0) {
+              alert('ボスを倒した！ 勝利！');
+              restartGame();
+            }
+          }
+        }
+      });
+
+      // 敵弾／ボス弾 vs プレイヤー
+      bullets.forEach(b => {
+        if (b.owner !== 'player' &&
+            Math.hypot(b.x-player.x, b.y-player.y) < b.r + player.size/2) {
+          alert('ゲームオーバー！ 得点: ' + score);
+          restartGame();
+        }
+      });
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // 壁描画
+      ctx.fillStyle = '#555';
+      walls.forEach(w => ctx.fillRect(w.x, w.y, w.w, w.h));
+
+      player.render();
+      bullets.forEach(b => b.render());
+      enemies.forEach(e => e.render());
+      if (boss) boss.render();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = '20px sans-serif';
+      ctx.fillText('Score: ' + score, 10, 25);
+      if (boss) ctx.fillText('Boss HP: ' + boss.hp, canvas.width - 120, 25);
+    }
+
+    // ゲーム開始
+    restartGame();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
